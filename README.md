@@ -114,7 +114,7 @@ For **opencode**, add to your `opencode.json`:
 ### Remote Execution & Control
 | Tool | Description |
 |------|-------------|
-| `mesh_run_command` | Shell commands: CMD (1), PowerShell (2), Linux (3), agent console (4) |
+| `mesh_run_command` | Shell commands: CMD (1), PowerShell (2), Linux (3), agent console (4). `run_as_user`: 0 = agent/SYSTEM (default), 1 = user or agent, 2 = user only |
 | `mesh_agent_console` | Raw agent console (JS) access |
 | `mesh_list_processes` / `mesh_kill_process` | Process management |
 | `mesh_list_software` | Installed software |

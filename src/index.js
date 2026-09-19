@@ -208,14 +208,27 @@ server.tool(
     node_id: z.string().describe('Device node ID'),
     command: z.string().describe('Command to execute'),
     type: z.number().optional().describe('Command type: 0=auto, 1=CMD, 2=PS, 3=Linux, 4=Agent console'),
+    run_as_user: z
+      .number()
+      .int()
+      .min(0)
+      .max(2)
+      .optional()
+      .describe(
+        'Who to run as: 0=agent (SYSTEM/root, the default), 1=logged-in user if there is one else the agent, 2=logged-in user only. ' +
+          'Anything that touches the interactive desktop needs 1 or 2 - under 0 the command runs in session 0, where for example ' +
+          'Get-Process MainWindowTitle comes back empty because window enumeration is per-desktop. Ignored for type 4. ' +
+          'With 2 and nobody logged in the agent runs nothing and sends no reply, so the call times out rather than erroring.'
+      ),
     reply: z.boolean().optional().describe('Request command output back'),
   },
-  async ({ node_id, command, type, reply }) => {
+  async ({ node_id, command, type, run_as_user, reply }) => {
     const cmd = {
       action: 'runcommands',
       nodeids: [node_id],
       cmds: command,
       type: type ?? 0,
+      runAsUser: run_as_user ?? 0,
       reply: reply ?? true,
     };
     const res = await meshClient.sendCommand(cmd, 30000);

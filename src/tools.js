@@ -159,6 +159,12 @@ export const toolDefinitions = [
           type: 'number',
           description: 'Command type: 0 = auto-detect, 1 = Windows CMD, 2 = Windows PowerShell, 3 = Linux/macOS shell, 4 = Agent console. Default: 0.',
         },
+        run_as_user: {
+          type: 'number',
+          description:
+            'Who to run as: 0 = agent (SYSTEM/root, the default), 1 = logged-in user if there is one else the agent, 2 = logged-in user only. ' +
+            'Needed for anything touching the interactive desktop; ignored for type 4. With 2 and no logged-in user the agent sends no reply.',
+        },
         reply: {
           type: 'boolean',
           description: 'If true, request the agent to send back the command output. Default: true.',
