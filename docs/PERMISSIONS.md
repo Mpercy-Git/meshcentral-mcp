@@ -18,7 +18,7 @@ that means an agent session is granted, by default:
 | Arbitrary code execution as SYSTEM/root on any managed device | `mesh_run_command`, `mesh_agent_console` | Full estate compromise |
 | Arbitrary read of any remote file | `mesh_file_read`, `mesh_file_download` | Mass data exfiltration |
 | Arbitrary write/delete on any remote file | `mesh_file_write`, `mesh_file_delete`, `mesh_file_upload` | Destruction, persistence, ransomware-equivalent |
-| Arbitrary **local** file read/write on the MCP host | `mesh_file_download` (`local_path`), `mesh_file_upload` (`local_path`) | The agent can write anywhere the MCP process can — including its own config, shell profiles, SSH keys |
+| ~~Arbitrary **local** file read/write on the MCP host~~ **(fixed)** | `mesh_file_download` (`local_path`), `mesh_file_upload` (`local_path`) | Was: the agent can write anywhere the MCP process can — including its own config, shell profiles, SSH keys. Now confined to `MESH_LOCAL_FILE_ROOT` |
 | Agent removal / core replacement | `mesh_uninstall_agent`, `mesh_distribute_core` | Loss of management plane, code push to every agent |
 | Identity and access management | `mesh_create_user`, `mesh_add_user_to_group`, `mesh_add_device_user` | Privilege escalation and persistence |
 | Server console | `mesh_server_console` | Server-level administration |
@@ -118,7 +118,7 @@ MeshCentral supports login tokens (`createLoginToken` in `meshuser.js`): a
 `tokenUser` / `tokenPass` pair with an optional expiry, which can be revoked without
 touching the account password. This is the right credential for an MCP service account.
 
-**The current `MESH_TOKEN` plumbing does not work.** `src/index.js` does:
+**The `MESH_TOKEN` plumbing did not work** (fixed — see §11). `src/index.js` did:
 
 ```js
 username: MESH_USERNAME || 'token',
@@ -126,10 +126,10 @@ password: MESH_TOKEN || MESH_PASSWORD,
 ```
 
 A MeshCentral login token is a *pair*; the literal string `'token'` is not a valid
-username, and a `tokenPass` alone will not authenticate. Fix this as part of the work:
-introduce `MESH_TOKEN_USER` / `MESH_TOKEN_PASS` (the values returned by
-`createLoginToken`) and pass them as the `x-meshauth` username/password, deprecating the
-single `MESH_TOKEN` variable. Also set a non-zero `expire` so a leaked token dies on its own.
+username, and a `tokenPass` alone will not authenticate. `MESH_TOKEN_USER` /
+`MESH_TOKEN_PASS` now carry the values returned by `createLoginToken` and are presented
+as the `x-meshauth` username/password. Set a non-zero `expire` when creating the token so
+a leaked one dies on its own.
 
 ---
 
@@ -359,11 +359,22 @@ to permitted.
    commands, withholding `MESHRIGHT_REMOTECOMMAND` on the service account is a far
    stronger control than any pattern list, and most of §5's command policy becomes
    belt-and-braces.
-3. **One profile or several deployments?** A single `mcp-bot` shared by every agent
-   session cannot be scoped per task. Separate MeshCentral accounts + separate MCP
-   server entries (`meshcentral-readonly`, `meshcentral-support`) give per-session least
-   privilege at the cost of more configuration.
+3. ~~**One profile or several deployments?**~~ **Decided: several.** Separate
+   MeshCentral bot accounts with scoped device-group rights, each behind its own MCP
+   server entry (`meshcentral-readonly`, `meshcentral-support`, …), giving per-session
+   least privilege. This makes Layer 0 the primary boundary and the Layer 1 profile a
+   matching client-side declaration of the same scope — the two should be provisioned
+   together, one policy profile per bot account.
 4. **Confirmation mechanism** — elicitation only (strong, but client-dependent), token
    fallback (universal, weak), or rely on the host client's own tool-permission prompts.
 5. **Policy distribution** — file on disk, or fetched from MeshCentral (e.g. encoded in
    the service account's device-group memberships) so policy and rights cannot drift apart.
+
+---
+
+## 11. Changelog
+
+- **2026-09-20** — Phase 3 bug fixes landed ahead of the rest of the design:
+  the local path jail (`src/local-path.js`, `MESH_LOCAL_FILE_ROOT`) and login-token
+  authentication (`MESH_TOKEN_USER` / `MESH_TOKEN_PASS`). Decision 3 settled in favour of
+  per-scope bot accounts.

@@ -6,34 +6,79 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { MeshCentralClient } from './mesh-client.js';
-import { toolDefinitions } from './tools.js';
+import { localFileRoot, resolveLocalPath } from './local-path.js';
 
 const MESH_SERVER = process.env.MESH_SERVER_URL || process.env.MESH_SERVER || '';
 const MESH_USERNAME = process.env.MESH_USERNAME || process.env.MESH_USER || '';
 const MESH_PASSWORD = process.env.MESH_PASSWORD || process.env.MESH_PASS || '';
-const MESH_TOKEN = process.env.MESH_TOKEN || process.env.MESH_API_KEY || '';
 const MESH_DOMAIN = process.env.MESH_DOMAIN || '';
 const MESH_INSECURE = process.env.MESH_INSECURE_TLS === 'true' || process.env.MESH_INSECURE === 'true';
+
+// A MeshCentral login token is a PAIR - createLoginToken returns a tokenUser
+// (always prefixed '~t:') and a tokenPass. The server routes a '~t:' username
+// to login-token verification, so the pair is presented in place of the
+// account's username and password. A tokenPass on its own cannot authenticate.
+function resolveCredentials() {
+  const tokenUser = process.env.MESH_TOKEN_USER || '';
+  const tokenPass = process.env.MESH_TOKEN_PASS || '';
+  const combined = process.env.MESH_TOKEN || process.env.MESH_API_KEY || '';
+
+  if (tokenUser || tokenPass) {
+    if (!tokenUser || !tokenPass) {
+      return { error: 'MESH_TOKEN_USER and MESH_TOKEN_PASS must both be set - a MeshCentral login token is a user/password pair.' };
+    }
+    return { username: tokenUser, password: tokenPass, kind: 'login token' };
+  }
+
+  if (combined) {
+    const sep = combined.indexOf(',');
+    if (sep === -1) {
+      return {
+        error:
+          'MESH_TOKEN must hold a full MeshCentral login token as "tokenUser,tokenPass" (the pair returned by ' +
+          'createLoginToken), or use the separate MESH_TOKEN_USER and MESH_TOKEN_PASS variables. A token password ' +
+          'on its own cannot authenticate.',
+      };
+    }
+    const user = combined.slice(0, sep).trim();
+    const pass = combined.slice(sep + 1).trim();
+    if (!user || !pass) {
+      return { error: 'MESH_TOKEN is malformed - expected "tokenUser,tokenPass".' };
+    }
+    return { username: user, password: pass, kind: 'login token' };
+  }
+
+  if (!MESH_USERNAME) {
+    return { error: 'MESH_USERNAME (or a login token via MESH_TOKEN_USER/MESH_TOKEN_PASS) environment variable is required.' };
+  }
+  if (!MESH_PASSWORD) {
+    return { error: 'MESH_PASSWORD (or a login token via MESH_TOKEN_USER/MESH_TOKEN_PASS) environment variable is required.' };
+  }
+  return { username: MESH_USERNAME, password: MESH_PASSWORD, kind: 'username/password' };
+}
 
 if (!MESH_SERVER) {
   console.error('MESH_SERVER_URL environment variable is required.');
   process.exit(1);
 }
 
-if (!MESH_USERNAME && !MESH_TOKEN) {
-  console.error('MESH_USERNAME (or MESH_TOKEN) environment variable is required.');
+const credentials = resolveCredentials();
+if (credentials.error) {
+  console.error(credentials.error);
   process.exit(1);
 }
 
-if (!MESH_PASSWORD && !MESH_TOKEN) {
-  console.error('MESH_PASSWORD (or MESH_TOKEN) environment variable is required.');
-  process.exit(1);
+if (credentials.kind === 'login token' && !credentials.username.startsWith('~t:')) {
+  console.error(
+    `[meshcentral-mcp] WARNING: login token username '${credentials.username}' does not start with '~t:'. ` +
+      'MeshCentral generates token usernames with that prefix; authentication will probably fail.'
+  );
 }
 
 const meshClient = new MeshCentralClient({
   serverUrl: MESH_SERVER,
-  username: MESH_USERNAME || 'token',
-  password: MESH_TOKEN || MESH_PASSWORD,
+  username: credentials.username,
+  password: credentials.password,
   domain: MESH_DOMAIN,
   rejectUnauthorized: !MESH_INSECURE,
 });
@@ -549,13 +594,20 @@ server.tool(
   {
     node_id: z.string().describe('Device node ID (must be online)'),
     remote_path: z.string().describe('Full path of the file on the remote device'),
-    local_path: z.string().describe('Local destination path'),
+    local_path: z
+      .string()
+      .describe(
+        'Local destination path. Confined to this server\'s local file directory - use a plain relative ' +
+          'path such as "logs/app.log"; paths outside that directory are rejected.'
+      ),
   },
   async ({ node_id, remote_path, local_path: localPath }) => {
     try {
+      const dest = resolveLocalPath(localPath);
       const data = await withFileTunnel(node_id, (t) => t.download(remote_path));
-      fs.writeFileSync(localPath, data);
-      return { content: [{ type: 'text', text: `Downloaded ${data.length} bytes from ${remote_path} to ${localPath}` }] };
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, data);
+      return { content: [{ type: 'text', text: `Downloaded ${data.length} bytes from ${remote_path} to ${dest}` }] };
     } catch (err) {
       return { content: [{ type: 'text', text: `ERROR: ${err.message}` }], isError: true };
     }
@@ -591,16 +643,22 @@ server.tool(
   'Upload a local file to a remote device.',
   {
     node_id: z.string().describe('Device node ID (must be online)'),
-    local_path: z.string().describe('Local file to upload'),
+    local_path: z
+      .string()
+      .describe(
+        'Local file to upload. Must sit inside this server\'s local file directory - use a plain relative ' +
+          'path such as "installer.msi"; paths outside that directory are rejected.'
+      ),
     remote_dir: z.string().describe('Destination directory on the remote device'),
     remote_name: z.string().optional().describe('Destination filename (default: same as local)'),
   },
   async ({ node_id, local_path: localPath, remote_dir: remoteDir, remote_name }) => {
     try {
-      const data = fs.readFileSync(localPath);
-      const name = remote_name || path.basename(localPath);
+      const src = resolveLocalPath(localPath, { mustExist: true });
+      const data = fs.readFileSync(src);
+      const name = remote_name || path.basename(src);
       await withFileTunnel(node_id, (t) => t.upload(remoteDir, name, data));
-      return { content: [{ type: 'text', text: `Uploaded ${localPath} (${data.length} bytes) to ${remoteDir}${remoteDir.endsWith('/') || remoteDir.endsWith('\\') ? '' : '/'}${name}` }] };
+      return { content: [{ type: 'text', text: `Uploaded ${src} (${data.length} bytes) to ${remoteDir}${remoteDir.endsWith('/') || remoteDir.endsWith('\\') ? '' : '/'}${name}` }] };
     } catch (err) {
       return { content: [{ type: 'text', text: `ERROR: ${err.message}` }], isError: true };
     }
@@ -1085,6 +1143,14 @@ server.tool(
 
 // ── Start ───────────────────────────────────────────────────────────────
 async function main() {
+  const root = localFileRoot();
+  console.error(
+    root === null
+      ? '[meshcentral-mcp] Local file access: UNRESTRICTED'
+      : `[meshcentral-mcp] Local file access confined to ${root}`
+  );
+  console.error(`[meshcentral-mcp] Authenticating with ${credentials.kind}`);
+
   try {
     await meshClient.connect();
     console.error('[meshcentral-mcp] Connected to MeshCentral');
